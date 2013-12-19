@@ -1,10 +1,15 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
 )
@@ -14,6 +19,11 @@ var base_url = "https://api.heroku.com"
 type Releases struct {
 	Id   string
 	Slug map[string]interface{}
+}
+
+type Slug struct {
+	Blob         map[string]interface{}
+	Process_type map[string]interface{}
 }
 
 func HttpClient() *http.Client {
@@ -26,8 +36,8 @@ func HttpClient() *http.Client {
 	return client
 }
 
-func MakeReleaseRequest(app_name string, release string) *http.Request {
-	request_url := fmt.Sprintf("%s/apps/%s/releases/%s", base_url, app_name, release)
+func MakeRequest(app_name string, what string, id string) *http.Request {
+	request_url := fmt.Sprintf("%s/apps/%s/%s/%s", base_url, app_name, what, id)
 	request, err := http.NewRequest("GET", request_url, nil)
 	if err != nil {
 		panic("request create")
@@ -37,12 +47,17 @@ func MakeReleaseRequest(app_name string, release string) *http.Request {
 	return request
 }
 
-func GetSlugForRelease(app_name string, release_name string) string {
+func GetSlugIdForRelease(app_name string, release_name string) string {
 	client := HttpClient()
-	request := MakeReleaseRequest(app_name, release_name)
+	request := MakeRequest(app_name, "releases", release_name)
 	resp, err := client.Do(request)
+	if err != nil {
+		panic(err)
+	}
 	body, err := ioutil.ReadAll(resp.Body)
-
+	if err != nil {
+		panic(err)
+	}
 	defer resp.Body.Close()
 
 	var release Releases
@@ -53,9 +68,67 @@ func GetSlugForRelease(app_name string, release_name string) string {
 	return release.Slug["id"].(string)
 }
 
+func GetSlugBlobUrl(app_name string, slug_id string) string {
+	client := HttpClient()
+	request := MakeRequest(app_name, "slugs", slug_id)
+	resp, err := client.Do(request)
+	if err != nil {
+		panic(err)
+	}
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+
+	var slug Slug
+	err = json.Unmarshal(body, &slug)
+	if err != nil {
+		panic(err)
+	}
+	return slug.Blob["get"].(string)
+}
+
+func FetchSlugArchive(app_name string, slug_url string) *bytes.Buffer {
+	buf := new(bytes.Buffer)
+	client := HttpClient()
+	request, err := http.NewRequest("GET", slug_url, nil)
+	resp, err := client.Do(request)
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	buf.Write(body)
+	return buf
+}
+
 func main() {
 	app_name := "ignite-heroku"
-	release_name := "3"
-	fmt.Println(GetSlugForRelease(app_name, release_name))
+	release_name := os.Args[3]
+	slug_id := GetSlugIdForRelease(app_name, release_name)
+	fmt.Println("Slug ID: ", slug_id)
+	slug_url := GetSlugBlobUrl(app_name, slug_id)
+	fmt.Println("Slug URL: ", slug_url)
+	tar_buffer := FetchSlugArchive(app_name, slug_url)
 
+	r, _ := gzip.NewReader(tar_buffer)
+	tr := tar.NewReader(r)
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			// end of tar archive
+			break
+		}
+		if err != nil {
+			log.Fatalln(err)
+		}
+		fmt.Printf("Contents of %s:\n", hdr.Name)
+		//if _, err := io.Copy(os.Stdout, tr); err != nil {
+		//	log.Fatalln(err)
+		//}
+		fmt.Println()
+	}
 }
