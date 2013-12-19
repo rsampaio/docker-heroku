@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path"
 )
 
 var base_url = "https://api.heroku.com"
@@ -104,6 +105,26 @@ func FetchSlugArchive(app_name string, slug_url string) *bytes.Buffer {
 	return buf
 }
 
+func UntarFiles(buffer *bytes.Buffer) {
+	r, _ := gzip.NewReader(buffer)
+	tr := tar.NewReader(r)
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Fatalln(err)
+		}
+		fmt.Printf("Contents of %s:\n", hdr.Name)
+		fmt.Printf("root dir: %s\n", path.Dir(hdr.Name))
+		os.MkdirAll(path.Dir(hdr.Name), os.FileMode(hdr.Mode))
+		file_content, _ := ioutil.ReadAll(tr)
+		ioutil.WriteFile(hdr.Name, file_content, os.FileMode(hdr.Mode))
+	}
+}
+
 func main() {
 	app_name := "ignite-heroku"
 	release_name := os.Args[3]
@@ -112,23 +133,5 @@ func main() {
 	slug_url := GetSlugBlobUrl(app_name, slug_id)
 	fmt.Println("Slug URL: ", slug_url)
 	tar_buffer := FetchSlugArchive(app_name, slug_url)
-
-	r, _ := gzip.NewReader(tar_buffer)
-	tr := tar.NewReader(r)
-
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			// end of tar archive
-			break
-		}
-		if err != nil {
-			log.Fatalln(err)
-		}
-		fmt.Printf("Contents of %s:\n", hdr.Name)
-		//if _, err := io.Copy(os.Stdout, tr); err != nil {
-		//	log.Fatalln(err)
-		//}
-		fmt.Println()
-	}
+	UntarFiles(tar_buffer)
 }
