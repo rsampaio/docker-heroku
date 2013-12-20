@@ -24,6 +24,16 @@ Summary
 - Go dockerclient lib has some issues, use internal Docker 
 	- i.e: docker.Config and docker.HostConfig which are tricky to figure.
 
+Installation
+------------
+
+> go get -v github.com/rsampaio/docker-heroku/...
+
+Usage
+-----
+
+docker-heroku -username rodrigo.vaz@xxx.com -token a1b2c3d4e5f6 -app heroku-app-name -release 3 -process web
+
 
 Problems and what I've learned
 ------------------------------
