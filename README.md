@@ -6,9 +6,13 @@ Introduction
 
 ### The goals of the project are: 
 	- Given an app name and release version
+
 	- Grab the slug blob
+
 	- Unpack
+
 	- Map the unpacked slug to a /app inside a container
+	
 	- Run the container with the commands of a specified process type
 
 Summary
