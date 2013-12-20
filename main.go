@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"github.com/dotcloud/docker"
+	dockerClient "github.com/rsampaio/go-dockerclient"
 )
 
 var base_url = "https://api.heroku.com"
@@ -22,9 +24,13 @@ type Releases struct {
 	Slug map[string]interface{}
 }
 
+type Volume struct {
+	string
+}
+
 type Slug struct {
-	Blob         map[string]interface{}
-	Process_type map[string]interface{}
+	Blob          map[string]interface{}
+	Process_Types map[string]interface{}
 }
 
 func HttpClient() *http.Client {
@@ -69,7 +75,7 @@ func GetSlugIdForRelease(app_name string, release_name string) string {
 	return release.Slug["id"].(string)
 }
 
-func GetSlugBlobUrl(app_name string, slug_id string) string {
+func GetSlugBlobUrl(app_name string, slug_id string) Slug {
 	client := HttpClient()
 	request := MakeRequest(app_name, "slugs", slug_id)
 	resp, err := client.Do(request)
@@ -88,7 +94,7 @@ func GetSlugBlobUrl(app_name string, slug_id string) string {
 	if err != nil {
 		panic(err)
 	}
-	return slug.Blob["get"].(string)
+	return slug
 }
 
 func FetchSlugArchive(app_name string, slug_url string) *bytes.Buffer {
@@ -106,6 +112,7 @@ func FetchSlugArchive(app_name string, slug_url string) *bytes.Buffer {
 }
 
 func UntarFiles(buffer *bytes.Buffer) {
+	os.RemoveAll("app")
 	r, _ := gzip.NewReader(buffer)
 	tr := tar.NewReader(r)
 
@@ -114,24 +121,71 @@ func UntarFiles(buffer *bytes.Buffer) {
 		if err == io.EOF {
 			break
 		}
+
 		if err != nil {
 			log.Fatalln(err)
 		}
-		fmt.Printf("Contents of %s:\n", hdr.Name)
-		fmt.Printf("root dir: %s\n", path.Dir(hdr.Name))
-		os.MkdirAll(path.Dir(hdr.Name), os.FileMode(hdr.Mode))
-		file_content, _ := ioutil.ReadAll(tr)
-		ioutil.WriteFile(hdr.Name, file_content, os.FileMode(hdr.Mode))
+
+		os.MkdirAll(path.Dir(hdr.Name), os.FileMode(0775))
+		if hdr.Linkname != "" {
+			err = os.Symlink(hdr.Linkname, hdr.Name)
+			if err != nil {
+				panic(err)
+			}
+		} else {
+			file_content, _ := ioutil.ReadAll(tr)
+			ioutil.WriteFile(hdr.Name, file_content, os.FileMode(0775))
+		}
 	}
+}
+
+func RunDockerContainer(cmd string) {
+	cwd, _ := os.Getwd()
+	docker_client, err := dockerClient.NewClient("unix:///var/run/docker.sock")
+	if err != nil {
+		panic("new client")
+	}
+
+	var config docker.Config
+	exposed_ports := make(map[docker.Port]struct{})
+	exposed_ports["80"] = struct{}{}
+
+	volumes := make(map[string]struct{})
+	volumes["/app"] = struct{}{}
+
+	config.Volumes = volumes
+	config.ExposedPorts = exposed_ports
+	config.Cmd = []string{"/bin/bash", "-c",  cmd}
+	config.Env = []string{"PORT=80"}
+	config.Image = "heroku-runtime"
+	config.WorkingDir = "/app"
+
+	container, err := docker_client.CreateContainer(dockerClient.CreateContainerOptions{}, &config)
+	if err != nil {
+		panic("create container")
+	}
+
+	err = docker_client.StartContainer(container.ID, &docker.HostConfig{Binds: []string{cwd + "/app:/app"}})
+	if err != nil {
+		panic("start container")
+	}
+	fmt.Printf("%+s\n", container.Name)
 }
 
 func main() {
 	app_name := "ignite-heroku"
 	release_name := os.Args[3]
 	slug_id := GetSlugIdForRelease(app_name, release_name)
-	fmt.Println("Slug ID: ", slug_id)
-	slug_url := GetSlugBlobUrl(app_name, slug_id)
-	fmt.Println("Slug URL: ", slug_url)
-	tar_buffer := FetchSlugArchive(app_name, slug_url)
+	fmt.Println("Slug ID:", slug_id)
+
+	slug := GetSlugBlobUrl(app_name, slug_id)
+	fmt.Println("Slug URL:", slug.Blob["get"].(string))
+
+	tar_buffer := FetchSlugArchive(app_name, slug.Blob["get"].(string))
+	fmt.Println("Download complete, unpacking.")
+
 	UntarFiles(tar_buffer)
+	fmt.Println("Unpack complete")
+	RunDockerContainer(slug.Process_Types[os.Args[4]].(string))
+
 }
