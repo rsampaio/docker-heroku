@@ -6,18 +6,27 @@ import (
 	"compress/gzip"
 	"crypto/tls"
 	"encoding/json"
+	"flag"
 	"fmt"
+	"github.com/dotcloud/docker"
+	dockerClient "github.com/rsampaio/go-dockerclient"
 	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"path"
-	"github.com/dotcloud/docker"
-	dockerClient "github.com/rsampaio/go-dockerclient"
+	"strconv"
 )
 
-var base_url = "https://api.heroku.com"
+var fUser = flag.String("username", "", "heroku username")
+var fToken = flag.String("token", "", "heroku account token")
+var fApp = flag.String("app", "", "heroku app name")
+var fRelease = flag.Int("release", 1, "application release")
+var fProcess = flag.String("process", "web", "process type")
+
+var baseUrl = "https://api.heroku.com"
+var appName string
 
 type Releases struct {
 	Id   string
@@ -43,20 +52,20 @@ func HttpClient() *http.Client {
 	return client
 }
 
-func MakeRequest(app_name string, what string, id string) *http.Request {
-	request_url := fmt.Sprintf("%s/apps/%s/%s/%s", base_url, app_name, what, id)
-	request, err := http.NewRequest("GET", request_url, nil)
+func MakeRequest(appName string, what string, id string) *http.Request {
+	requestUrl := fmt.Sprintf("%s/apps/%s/%s/%s", baseUrl, appName, what, id)
+	request, err := http.NewRequest("GET", requestUrl, nil)
 	if err != nil {
 		panic("request create")
 	}
 	request.Header.Add("Accept", "application/vnd.heroku+json; version=3")
-	request.SetBasicAuth(os.Args[1], os.Args[2])
+	request.SetBasicAuth(*fUser, *fToken)
 	return request
 }
 
-func GetSlugIdForRelease(app_name string, release_name string) string {
+func GetSlugIdForRelease(appName string, release_name string) string {
 	client := HttpClient()
-	request := MakeRequest(app_name, "releases", release_name)
+	request := MakeRequest(appName, "releases", release_name)
 	resp, err := client.Do(request)
 	if err != nil {
 		panic(err)
@@ -75,9 +84,9 @@ func GetSlugIdForRelease(app_name string, release_name string) string {
 	return release.Slug["id"].(string)
 }
 
-func GetSlugBlobUrl(app_name string, slug_id string) Slug {
+func GetSlugBlobUrl(appName string, slugId string) Slug {
 	client := HttpClient()
-	request := MakeRequest(app_name, "slugs", slug_id)
+	request := MakeRequest(appName, "slugs", slugId)
 	resp, err := client.Do(request)
 	if err != nil {
 		panic(err)
@@ -97,7 +106,7 @@ func GetSlugBlobUrl(app_name string, slug_id string) Slug {
 	return slug
 }
 
-func FetchSlugArchive(app_name string, slug_url string) *bytes.Buffer {
+func FetchSlugArchive(appName string, slug_url string) *bytes.Buffer {
 	buf := new(bytes.Buffer)
 	client := HttpClient()
 	request, err := http.NewRequest("GET", slug_url, nil)
@@ -133,39 +142,55 @@ func UntarFiles(buffer *bytes.Buffer) {
 				panic(err)
 			}
 		} else {
-			file_content, _ := ioutil.ReadAll(tr)
-			ioutil.WriteFile(hdr.Name, file_content, os.FileMode(0775))
+			fileContent, _ := ioutil.ReadAll(tr)
+			ioutil.WriteFile(hdr.Name, fileContent, os.FileMode(0775))
 		}
 	}
 }
 
 func RunDockerContainer(cmd string) {
+	herokuClient := HttpClient()
+	request := MakeRequest(appName, "config-vars", "")
+	resp, err := herokuClient.Do(request)
+	if err != nil {
+		panic("do request")
+	}
+
+	herokuEnv, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		panic("read response")
+	}
+	fmt.Println("Heroku Env:", string(herokuEnv))
+	
 	cwd, _ := os.Getwd()
-	docker_client, err := dockerClient.NewClient("unix:///var/run/docker.sock")
+
+	dClient, err := dockerClient.NewClient("unix:///var/run/docker.sock")
 	if err != nil {
 		panic("new client")
 	}
 
 	var config docker.Config
-	exposed_ports := make(map[docker.Port]struct{})
-	exposed_ports["80"] = struct{}{}
+	exposedPorts := make(map[docker.Port]struct{})
+	exposedPorts["80"] = struct{}{}
 
 	volumes := make(map[string]struct{})
 	volumes["/app"] = struct{}{}
 
 	config.Volumes = volumes
-	config.ExposedPorts = exposed_ports
-	config.Cmd = []string{"/bin/bash", "-c",  cmd}
+	config.ExposedPorts = exposedPorts
+	config.Cmd = []string{"/bin/bash", "-c", cmd}
+
 	config.Env = []string{"PORT=80"}
+
 	config.Image = "heroku-runtime"
 	config.WorkingDir = "/app"
 
-	container, err := docker_client.CreateContainer(dockerClient.CreateContainerOptions{}, &config)
+	container, err := dClient.CreateContainer(dockerClient.CreateContainerOptions{}, &config)
 	if err != nil {
 		panic("create container")
 	}
 
-	err = docker_client.StartContainer(container.ID, &docker.HostConfig{Binds: []string{cwd + "/app:/app"}})
+	err = dClient.StartContainer(container.ID, &docker.HostConfig{Binds: []string{cwd + "/app:/app"}})
 	if err != nil {
 		panic("start container")
 	}
@@ -173,24 +198,25 @@ func RunDockerContainer(cmd string) {
 }
 
 func main() {
+	flag.Parse()
 
-	if len(os.Args) < 5 {
-		fmt.Printf("Usage: \n%s <username> <token> <release_version> <process_type>\n", os.Args[0])
+	if flag.NFlag() < 5 {
+		flag.PrintDefaults()
 		os.Exit(-1)
 	}
-	app_name := "ignite-heroku"
-	release_name := os.Args[3]
-	slug_id := GetSlugIdForRelease(app_name, release_name)
-	fmt.Fprintf(os.Stderr, "Slug ID: %s\n", slug_id)
+	appName := *fApp
+	release_name := strconv.Itoa(*fRelease)
+	slugId := GetSlugIdForRelease(appName, release_name)
+	fmt.Fprintf(os.Stderr, "Slug ID: %s\n", slugId)
 
-	slug := GetSlugBlobUrl(app_name, slug_id)
+	slug := GetSlugBlobUrl(appName, slugId)
 	fmt.Fprintf(os.Stderr, "Slug URL: %s\n", slug.Blob["get"].(string))
 
-	tar_buffer := FetchSlugArchive(app_name, slug.Blob["get"].(string))
+	tarBuffer := FetchSlugArchive(appName, slug.Blob["get"].(string))
 	fmt.Fprintf(os.Stderr, "Download complete, unpacking.\n")
 
-	UntarFiles(tar_buffer)
+	UntarFiles(tarBuffer)
 	fmt.Fprintf(os.Stderr, "Unpack complete\n")
-	RunDockerContainer(slug.Process_Types[os.Args[4]].(string))
+	RunDockerContainer(slug.Process_Types[*fProcess].(string))
 
 }
