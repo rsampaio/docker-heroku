@@ -169,23 +169,28 @@ func RunDockerContainer(cmd string) {
 	if err != nil {
 		panic("start container")
 	}
-	fmt.Printf("%+s\n", container.Name)
+	fmt.Fprintf(os.Stdout, "%s\n", container.ID)
 }
 
 func main() {
+
+	if len(os.Args) < 5 {
+		fmt.Printf("Usage: \n%s <username> <token> <release_version> <process_type>\n", os.Args[0])
+		os.Exit(-1)
+	}
 	app_name := "ignite-heroku"
 	release_name := os.Args[3]
 	slug_id := GetSlugIdForRelease(app_name, release_name)
-	fmt.Println("Slug ID:", slug_id)
+	fmt.Fprintf(os.Stderr, "Slug ID: %s\n", slug_id)
 
 	slug := GetSlugBlobUrl(app_name, slug_id)
-	fmt.Println("Slug URL:", slug.Blob["get"].(string))
+	fmt.Fprintf(os.Stderr, "Slug URL: %s\n", slug.Blob["get"].(string))
 
 	tar_buffer := FetchSlugArchive(app_name, slug.Blob["get"].(string))
-	fmt.Println("Download complete, unpacking.")
+	fmt.Fprintf(os.Stderr, "Download complete, unpacking.\n")
 
 	UntarFiles(tar_buffer)
-	fmt.Println("Unpack complete")
+	fmt.Fprintf(os.Stderr, "Unpack complete\n")
 	RunDockerContainer(slug.Process_Types[os.Args[4]].(string))
 
 }
