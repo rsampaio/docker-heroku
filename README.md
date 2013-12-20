@@ -32,7 +32,7 @@ Installation
 Usage
 -----
 
-docker-heroku -username rodrigo.vaz@xxx.com -token a1b2c3d4e5f6 -app heroku-app-name -release 3 -process web
+> docker-heroku -username rodrigo.vaz@xxx.com -token a1b2c3d4e5f6 -app heroku-app-name -release 3 -process web
 
 
 Problems and what I've learned
